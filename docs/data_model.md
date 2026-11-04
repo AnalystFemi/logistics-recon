@@ -11,23 +11,36 @@ score the reconciliation pipeline.
 | Master | customers, skus, lots, warehouses | Reference data (SKU shelf life, lot expiry) |
 | Truth | truth_ledger | What physically happened |
 | Truth | fault_log | Injected faults (answer key) |
-| Source | wms_a_txn, wms_b_txn, wms_c_txn | Receipts, shipments, adjustments, transfers |
-| Source | wms_*_snapshot | Daily on-hand per customer/SKU/lot |
-| Source | oms_event, oms_snapshot | Central order and stock view |
+| Truth | cycle_count | Physical count per lot at period end |
+| Source | wms_a_txn, wms_b_txn, wms_c_txn | Receipts, shipments and adjustments per warehouse system |
+| Source | wms_a_snapshot, wms_b_snapshot, wms_c_snapshot | On-hand per lot as of period end (late-posted rows excluded) |
+| Source | oms_event | Central order and inventory events across all warehouses |
+| Source | oms_snapshot | Central on-hand per lot as of period end |
 
 ## System differences (cleaned in Silver)
 - WMS-A: UTC timestamps, units
-- WMS-B: local-time strings, units
-- WMS-C: cases (converted via skus.units_per_case)
+- WMS-B: local-time (WAT) text timestamps, different column names, units
+- WMS-C: quantities in cases (converted via skus.units_per_case)
+- OMS: UTC timestamps, units, covers all warehouses
 
 ## Scale
 3 warehouses, 5 customers, 200 SKUs, ~600 lots, 90 days,
 ~150k transactions
 
 ## Injected faults (~3% of transactions)
-Missing 1%, delayed 1%, duplicated 0.5%, incorrect 0.5%,
-plus a small set of lots with true physical loss.
+| Fault | Share | How it appears |
+|---|---|---|
+| Missing | ~1% | Transaction absent from one system |
+| Delayed | ~1% | Posted 2-10 days late |
+| Duplicated | ~0.5% | Same transaction recorded twice |
+| Incorrect | ~0.5% | Quantity typo (x10) or posted to the wrong lot |
+| Physical loss | 15 lots | Stock disappears; no system records it |
 
+## Validation
+On lots with no injected fault, all systems and the physical
+count agree exactly. The generator asserts this on every run.
+
+## Entity relationships
 ```mermaid
 erDiagram
   CUSTOMER ||--o{ SKU : owns
