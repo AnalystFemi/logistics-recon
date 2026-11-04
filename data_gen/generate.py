@@ -6,7 +6,8 @@ import pandas as pd
 
 SEED = 42
 START, END = pd.Timestamp("2026-07-01"), pd.Timestamp("2026-09-30")
-FAULT_RATE = 0.03
+FAULT_RATE = 0.03  # overall share of transactions faulted
+AFFECTED_SHARE = 0.4  # faults cluster in 40% of lots; the rest stay clean
 FAULT_MIX = {"MISSING": 0.33, "DELAYED": 0.33, "DUPLICATE": 0.17, "INCORRECT": 0.17}
 WAREHOUSES = {"WH-A": "WMS-A", "WH-B": "WMS-B", "WH-C": "WMS-C"}
 OUT = Path("data/raw")
@@ -57,12 +58,13 @@ def make_truth(lots):
     return t
 
 
-def copy_with_faults(part, system, sku_lots):
+def copy_with_faults(part, system, sku_lots, affected):
     """A system's view of the truth, with ~3% of rows faulted. Returns (data, fault rows)."""
     df = part[part.txn_type != "LOSS"].copy()
     df["ref_no"] = df.pop("txn_id")
     df["recorded_ts"] = df.event_ts + pd.to_timedelta(rng.integers(1, 120, len(df)), unit="s")
-    idx = df.index[rng.random(len(df)) < FAULT_RATE]
+    hit = (rng.random(len(df)) < FAULT_RATE / AFFECTED_SHARE) & df.lot_id.isin(affected)
+    idx = df.index[hit]
     kind = pd.Series(rng.choice(list(FAULT_MIX), len(idx), p=list(FAULT_MIX.values())), index=idx)
     base = df.loc[idx, ["ref_no", "lot_id"]].reset_index(drop=True)
 
@@ -72,10 +74,11 @@ def copy_with_faults(part, system, sku_lots):
 
     wrong = {}
     for i in kind.index[kind == "INCORRECT"]:
-        if rng.random() < 0.5:
+        others = [l for l in sku_lots[df.at[i, "sku_id"]]
+                  if l != df.at[i, "lot_id"] and l in affected]  # wrong lot stays within affected lots
+        if rng.random() < 0.5 or not others:
             df.at[i, "qty"] = df.at[i, "qty"] * 10  # typo
         else:
-            others = [l for l in sku_lots[df.at[i, "sku_id"]] if l != df.at[i, "lot_id"]]
             wrong[i] = str(rng.choice(others))
             df.at[i, "lot_id"] = wrong[i]  # posted to the wrong lot
 
@@ -100,6 +103,7 @@ def validate(systems, fault_log, count, lots):
     for name, df in systems.items():
         mine = [l for l in clean if name == "OMS" or WAREHOUSES[owner[l]] == name]
         assert (snapshot(df).reindex(mine) == count[mine]).all(), f"{name} mismatch on clean lots"
+    assert len(clean) >= 0.3 * len(count), "too few clean lots to validate against"
     print(fault_log.groupby(["system", "fault_type"]).size().unstack(fill_value=0))
     print(f"Verified {len(clean)} fault-free lots of {len(count)}: all systems match physical count")
 
@@ -119,12 +123,13 @@ def main():
     skus, lots = make_master()
     sku_lots = lots.groupby("sku_id").lot_id.apply(list).to_dict()
     truth = make_truth(lots)
+    affected = set(rng.choice(lots.lot_id, int(len(lots) * AFFECTED_SHARE), replace=False))
 
     systems, faults = {}, []
     for wh, name in WAREHOUSES.items():
-        systems[name], f = copy_with_faults(truth[truth.warehouse_id == wh], name, sku_lots)
+        systems[name], f = copy_with_faults(truth[truth.warehouse_id == wh], name, sku_lots, affected)
         faults.append(f)
-    systems["OMS"], f = copy_with_faults(truth, "OMS", sku_lots)
+    systems["OMS"], f = copy_with_faults(truth, "OMS", sku_lots, affected)
     faults.append(f)
     loss = truth[truth.txn_type == "LOSS"]
     faults.append(pd.DataFrame({"system": "NONE", "ref_no": loss.txn_id, "lot_id": loss.lot_id,

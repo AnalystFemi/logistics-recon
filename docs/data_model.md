@@ -37,8 +37,9 @@ score the reconciliation pipeline.
 | Physical loss | 15 lots | Stock disappears; no system records it |
 
 ## Validation
-On lots with no injected fault, all systems and the physical
-count agree exactly. The generator asserts this on every run.
+Faults cluster in 40% of lots; the rest stay clean. On those
+clean lots (~60%), all systems and the physical count agree
+exactly. The generator asserts this on every run.
 
 ## Entity relationships
 ```mermaid
